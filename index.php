@@ -22,6 +22,7 @@ require_once __DIR__ . '/app/controllers/BaseController.php';
 require_once __DIR__ . '/app/controllers/AuthController.php';
 require_once __DIR__ . '/app/controllers/DashboardController.php';
 require_once __DIR__ . '/app/controllers/GalleryController.php';
+require_once __DIR__ . '/app/controllers/EligibleProgramsController.php';
 
 // Simple router
 class Router {
@@ -48,6 +49,11 @@ class Router {
         $basePath = dirname($_SERVER['SCRIPT_NAME']);
         if ($basePath !== '/') {
             $requestPath = str_replace($basePath, '', $requestPath);
+        }
+        
+        // Remove index.php if present (for direct access)
+        if (strpos($requestPath, '/index.php') === 0) {
+            $requestPath = substr($requestPath, 10); // Remove '/index.php'
         }
         
         // Debug output
@@ -135,6 +141,7 @@ $router->addRoute('POST', '/dashboard/api/clear-cache', 'DashboardController', '
 // Authentication routes
 $router->addRoute('GET', '/auth/login', 'AuthController', 'login');
 $router->addRoute('POST', '/auth/login', 'AuthController', 'login');
+$router->addRoute('POST', '/auth/api/login', 'AuthController', 'apiLogin');
 $router->addRoute('GET', '/auth/logout', 'AuthController', 'logout');
 $router->addRoute('GET', '/auth/forgot-password', 'AuthController', 'forgotPassword');
 $router->addRoute('POST', '/auth/forgot-password', 'AuthController', 'forgotPassword');
@@ -178,6 +185,13 @@ $router->addRoute('GET', '/api/menu', 'ApiController', 'getMenu');
 $router->addRoute('GET', '/api/gallery', 'ApiController', 'getGallery');
 $router->addRoute('GET', '/api/content/{section}', 'ApiController', 'getContent');
 $router->addRoute('GET', '/api/settings', 'ApiController', 'getSettings');
+
+// Eligible Programs (Smart Brochures sync from parrot_mis)
+$router->addRoute('GET',  '/eligible-programs',                  'EligibleProgramsController', 'index');
+$router->addRoute('POST', '/eligible-programs/toggle-hidden',    'EligibleProgramsController', 'toggleHidden');
+$router->addRoute('POST', '/eligible-programs/toggle-featured',  'EligibleProgramsController', 'toggleFeatured');
+$router->addRoute('POST', '/eligible-programs/update-label',     'EligibleProgramsController', 'updateLabel');
+$router->addRoute('GET',  '/api/eligible-programs',              'EligibleProgramsController', 'apiList');
 
 // Dispatch the request
 $router->dispatch();

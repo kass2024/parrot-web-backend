@@ -102,6 +102,12 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link" href="<?= baseUrl('eligible-programs') ?>">
+                                <i class="fas fa-graduation-cap me-2"></i>
+                                Eligible Programs
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link" href="<?= baseUrl('menus') ?>">
                                 <i class="fas fa-bars me-2"></i>
                                 Menu Management

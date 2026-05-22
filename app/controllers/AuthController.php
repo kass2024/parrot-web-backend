@@ -271,5 +271,74 @@ class AuthController extends BaseController {
         $this->logActivity('password_reset', 'Password was reset using reset token');
         $this->redirect('auth/login');
     }
+
+    // API Login method for AJAX requests
+    public function apiLogin() {
+        $this->validateAjax();
+        
+        $username = $this->getInput('username');
+        $password = $this->getInput('password');
+        $remember = $this->getInput('remember') === 'on';
+
+        $errors = [];
+
+        if (empty($username)) {
+            $errors['username'] = 'Username or email is required';
+        }
+
+        if (empty($password)) {
+            $errors['password'] = 'Password is required';
+        }
+
+        if (!empty($errors)) {
+            $this->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $errors
+            ], 400);
+            return;
+        }
+
+        $admin_model = new Admin();
+        $user = $admin_model->login($username, $password);
+
+        if ($user) {
+            // Set session
+            $_SESSION['admin_id'] = $user['id'];
+            $_SESSION['admin_username'] = $user['username'];
+            $_SESSION['admin_role'] = $user['role'];
+            $_SESSION['login_time'] = time();
+
+            // Set remember me cookie if requested
+            if ($remember) {
+                $token = $this->generateRandomString(32);
+                $expires = time() + (30 * 24 * 60 * 60); // 30 days
+                
+                setcookie('remember_token', $token, $expires, '/', '', false, true);
+            }
+
+            // Log the login
+            $this->logActivity('login', "User {$user['username']} logged in via API");
+
+            $this->json([
+                'success' => true,
+                'message' => 'Login successful',
+                'data' => [
+                    'user' => [
+                        'id' => $user['id'],
+                        'username' => $user['username'],
+                        'full_name' => $user['full_name'],
+                        'email' => $user['email'],
+                        'role' => $user['role']
+                    ]
+                ]
+            ]);
+        } else {
+            $this->json([
+                'success' => false,
+                'message' => 'Invalid username or password'
+            ], 401);
+        }
+    }
 }
 ?>
