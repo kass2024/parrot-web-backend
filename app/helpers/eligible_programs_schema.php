@@ -36,6 +36,17 @@ if (!defined('ELIGIBLE_PROGRAMS_MENU_TITLE')) {
  * Connect to MySQL server WITHOUT a database first so we can CREATE DATABASE
  * if needed, then switch to it. Returns a PDO bound to the CMS database.
  */
+/**
+ * Open a PDO connection bound to the CMS database.
+ *
+ * cPanel / shared-hosting safe:
+ *   1. Try to connect directly to the named database (the normal cPanel case
+ *      where the DB is pre-created in the control panel).
+ *   2. If that fails because the database doesn't exist (errno 1049), connect
+ *      without a DB and CREATE DATABASE — this only works on XAMPP / dev
+ *      where the user has CREATE privileges.
+ *   3. Any other connection error is rethrown.
+ */
 function pcvc_eligible_programs_pdo(): PDO
 {
     static $pdo = null;
@@ -43,18 +54,32 @@ function pcvc_eligible_programs_pdo(): PDO
         return $pdo;
     }
 
-    $dsn = 'mysql:host=' . DB_HOST . ';charset=utf8mb4';
-    $pdo = new PDO($dsn, DB_USER, DB_PASS, [
+    $dbName  = (string) DB_NAME;
+    $options = [
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
+    ];
 
-    $dbName = DB_NAME;
+    try {
+        $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . $dbName . ';charset=utf8mb4';
+        $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+        return $pdo;
+    } catch (PDOException $e) {
+        $code      = (int) ($e->errorInfo[1] ?? 0);
+        $missingDb = $code === 1049 || stripos($e->getMessage(), 'unknown database') !== false;
+        if (!$missingDb) {
+            throw $e;
+        }
+    }
+
+    $dsn = 'mysql:host=' . DB_HOST . ';charset=utf8mb4';
+    $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+    $safeName = str_replace('`', '', $dbName);
     $pdo->exec(
-        'CREATE DATABASE IF NOT EXISTS `' . str_replace('`', '', $dbName) . '`
+        'CREATE DATABASE IF NOT EXISTS `' . $safeName . '`
          DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
     );
-    $pdo->exec('USE `' . str_replace('`', '', $dbName) . '`');
+    $pdo->exec('USE `' . $safeName . '`');
 
     return $pdo;
 }
