@@ -4,14 +4,11 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-// Set headers for CORS and JSON
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization');
+// CORS is set once in .htaccess (mod_headers). Do not duplicate here.
 
-// Handle preflight requests
+// Handle preflight requests (Apache may still route OPTIONS here)
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
+    http_response_code(204);
     exit();
 }
 
