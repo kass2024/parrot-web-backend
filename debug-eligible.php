@@ -80,6 +80,22 @@ step("Connect to MIS DB ({$misDb})", function () use (&$misPdo, $misDb) {
     return $misDb;
 });
 
+step("All databases this user can see", function () use ($cmsPdo) {
+    if (!$cmsPdo) return 'skipped';
+    $rows = $cmsPdo->query('SHOW DATABASES')->fetchAll(PDO::FETCH_COLUMN);
+    return implode(', ', $rows);
+});
+
+step("Brochures inside CMS DB itself", function () use ($cmsPdo) {
+    if (!$cmsPdo) return 'skipped';
+    try {
+        $row = $cmsPdo->query('SELECT COUNT(*) FROM marketing_brochures')->fetchColumn();
+        return (int) $row . " rows in " . DB_NAME . ".marketing_brochures (this is where MIS may be writing!)";
+    } catch (Throwable $e) {
+        return "(no marketing_brochures in " . DB_NAME . ")";
+    }
+});
+
 step("MIS marketing_brochures exists", function () use ($misPdo, $misDb) {
     if (!$misPdo) return 'skipped';
     $row = $misPdo->query('SELECT COUNT(*) FROM marketing_brochures')->fetchColumn();
