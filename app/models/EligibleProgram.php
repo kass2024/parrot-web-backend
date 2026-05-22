@@ -23,6 +23,7 @@ class EligibleProgram extends BaseModel
     /**
      * Make sure the parrot_mis `marketing_brochures` table has the columns we
      * read (e.g. university_id). Idempotent — safe to call every request.
+     * Uses the MIS connection (separate user) so no cross-grants are needed.
      */
     private function ensureMisColumns(): void
     {
@@ -30,103 +31,140 @@ class EligibleProgram extends BaseModel
         if ($done) {
             return;
         }
-        $misDb = preg_replace('/[^a-zA-Z0-9_]/', '', PARROT_MIS_DB);
-        if ($misDb === '') {
-            $done = true;
+        $done   = true;
+        $misPdo = pcvc_mis_pdo();
+        if (!$misPdo) {
             return;
         }
         try {
-            $check = $this->conn->prepare(
-                'SELECT 1 FROM information_schema.COLUMNS
-                 WHERE TABLE_SCHEMA = :db
-                   AND TABLE_NAME = "marketing_brochures"
-                   AND COLUMN_NAME = "university_id"
-                 LIMIT 1'
+            $check = $misPdo->query(
+                "SELECT 1 FROM information_schema.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'marketing_brochures'
+                    AND COLUMN_NAME  = 'university_id'
+                  LIMIT 1"
             );
-            $check->execute([':db' => $misDb]);
-            if (!$check->fetch()) {
-                $this->conn->exec(
-                    "ALTER TABLE `{$misDb}`.`marketing_brochures`
-                     ADD COLUMN `university_id` INT UNSIGNED NULL DEFAULT NULL AFTER `region_id`"
+            if ($check && !$check->fetch()) {
+                $misPdo->exec(
+                    'ALTER TABLE `marketing_brochures`
+                       ADD COLUMN `university_id` INT UNSIGNED NULL DEFAULT NULL AFTER `region_id`'
                 );
-                @$this->conn->exec(
-                    "ALTER TABLE `{$misDb}`.`marketing_brochures`
-                     ADD INDEX `idx_brochure_university` (`university_id`)"
+                @$misPdo->exec(
+                    'ALTER TABLE `marketing_brochures`
+                       ADD INDEX `idx_brochure_university` (`university_id`)'
                 );
             }
         } catch (Throwable $e) {
             error_log('ensureMisColumns failed: ' . $e->getMessage());
         }
-        $done = true;
     }
 
     /**
-     * Cross-DB read from mis_parrot.marketing_brochures, merged with our
-     * eligible_programs_settings overrides. Always returns absolute URLs that
-     * point at the parrot_mis install (PDFs + public brochure-view.php page).
+     * Read brochures from the MIS database (its own connection) and merge with
+     * our eligible_programs_settings overrides in PHP. This avoids requiring
+     * cross-database grants on cPanel.
      *
      * @return array<int, array<string, mixed>>
      */
     public function getPublishedBrochures(bool $includeHidden = false): array
     {
-        $misDb = preg_replace('/[^a-zA-Z0-9_]/', '', PARROT_MIS_DB);
-        if ($misDb === '') {
+        $misPdo = pcvc_mis_pdo();
+        if (!$misPdo) {
+            error_log('EligibleProgram: MIS PDO unavailable (check PARROT_MIS_DB / PARROT_MIS_USER)');
             return [];
         }
+
+        try {
+            $cols = $misPdo->query(
+                "SELECT 1 FROM information_schema.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'marketing_brochures'
+                    AND COLUMN_NAME  = 'university_id'
+                  LIMIT 1"
+            );
+            $hasUniversity = $cols && $cols->fetch();
+        } catch (Throwable $e) {
+            $hasUniversity = false;
+        }
+
+        $uniSelect  = $hasUniversity ? 'b.university_id, COALESCE(u.name, \'\') AS university_name' : 'NULL AS university_id, \'\' AS university_name';
+        $uniJoin    = $hasUniversity ? 'LEFT JOIN universities u ON u.id = b.university_id' : '';
 
         $sql = "
             SELECT
-                b.id,
-                b.title,
-                b.slug,
-                b.description,
-                b.pdf_filename,
-                b.pdf_path,
-                b.pdf_size_bytes,
-                b.cover_image,
-                b.view_count,
-                b.share_count,
-                b.created_at,
+                b.id, b.title, b.slug, b.description,
+                b.pdf_filename, b.pdf_path, b.pdf_size_bytes, b.cover_image,
+                b.view_count, b.share_count, b.created_at,
                 b.region_id,
-                COALESCE(r.name, 'Global')             AS region_name,
-                b.university_id,
-                COALESCE(u.name, '')                   AS university_name,
-                COALESCE(s.display_title, b.title)     AS display_title,
-                COALESCE(s.display_subtitle, '')       AS display_subtitle,
-                COALESCE(s.is_featured, 0)             AS is_featured,
-                COALESCE(s.is_hidden, 0)               AS is_hidden,
-                COALESCE(s.position, 999999)           AS position
-            FROM `{$misDb}`.`marketing_brochures` b
-            LEFT JOIN `{$misDb}`.`regions` r      ON r.id = b.region_id
-            LEFT JOIN `{$misDb}`.`universities` u ON u.id = b.university_id
-            LEFT JOIN `eligible_programs_settings` s
-                   ON s.brochure_slug COLLATE utf8mb4_general_ci = b.slug COLLATE utf8mb4_general_ci
+                COALESCE(r.name, 'Global') AS region_name,
+                {$uniSelect}
+            FROM marketing_brochures b
+            LEFT JOIN regions r ON r.id = b.region_id
+            {$uniJoin}
             WHERE b.is_active = 1
+            ORDER BY b.created_at DESC
         ";
 
-        if (!$includeHidden) {
-            $sql .= ' AND COALESCE(s.is_hidden, 0) = 0';
-        }
-
-        $sql .= ' ORDER BY is_featured DESC, position ASC, b.created_at DESC';
-
         try {
-            $rows = $this->query($sql);
+            $brochures = $misPdo->query($sql)->fetchAll(PDO::FETCH_ASSOC) ?: [];
         } catch (Throwable $e) {
-            error_log('EligibleProgram cross-db query failed: ' . $e->getMessage());
+            error_log('EligibleProgram MIS query failed: ' . $e->getMessage());
             return [];
         }
 
-        $base = rtrim(PARROT_MIS_PUBLIC_URL, '/');
-        foreach ($rows as &$row) {
-            $slug = (string) ($row['slug'] ?? '');
-            $row['view_url'] = $base . '/brochure-view.php?slug=' . rawurlencode($slug);
-            $row['pdf_url']  = $base . '/' . ltrim((string) $row['pdf_path'], '/');
-            $row['pdf_size_human'] = $this->humanBytes((int) ($row['pdf_size_bytes'] ?? 0));
+        $settings = [];
+        if ($brochures) {
+            $slugs = array_values(array_unique(array_map(
+                static fn(array $b) => (string) ($b['slug'] ?? ''),
+                $brochures
+            )));
+            $slugs = array_filter($slugs, static fn(string $s) => $s !== '');
+            if ($slugs) {
+                $placeholders = implode(',', array_fill(0, count($slugs), '?'));
+                $stmt = $this->conn->prepare(
+                    "SELECT brochure_slug, display_title, display_subtitle,
+                            is_featured, is_hidden, position
+                       FROM eligible_programs_settings
+                      WHERE brochure_slug IN ({$placeholders})"
+                );
+                $stmt->execute(array_values($slugs));
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $settings[(string) $row['brochure_slug']] = $row;
+                }
+            }
         }
-        unset($row);
 
-        return $rows;
+        $base = rtrim(PARROT_MIS_PUBLIC_URL, '/');
+        $out  = [];
+        foreach ($brochures as $row) {
+            $slug = (string) ($row['slug'] ?? '');
+            $s    = $settings[$slug] ?? [];
+            $isHidden = (int) ($s['is_hidden'] ?? 0);
+            if (!$includeHidden && $isHidden) {
+                continue;
+            }
+            $row['display_title']    = (string) ($s['display_title'] ?? '') !== '' ? (string) $s['display_title'] : (string) $row['title'];
+            $row['display_subtitle'] = (string) ($s['display_subtitle'] ?? '');
+            $row['is_featured']      = (int) ($s['is_featured'] ?? 0);
+            $row['is_hidden']        = $isHidden;
+            $row['position']         = (int) ($s['position'] ?? 999999);
+            $row['view_url']         = $base . '/brochure-view.php?slug=' . rawurlencode($slug);
+            $row['pdf_url']          = $base . '/' . ltrim((string) $row['pdf_path'], '/');
+            $row['pdf_size_human']   = $this->humanBytes((int) ($row['pdf_size_bytes'] ?? 0));
+            $out[] = $row;
+        }
+
+        usort($out, static function (array $a, array $b): int {
+            if ($a['is_featured'] !== $b['is_featured']) {
+                return ((int) $b['is_featured']) <=> ((int) $a['is_featured']);
+            }
+            if ($a['position'] !== $b['position']) {
+                return ((int) $a['position']) <=> ((int) $b['position']);
+            }
+            return strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? ''));
+        });
+
+        return $out;
     }
 
     public function setHidden(string $slug, bool $hidden): void

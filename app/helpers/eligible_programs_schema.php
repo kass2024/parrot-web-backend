@@ -19,8 +19,54 @@ require_once __DIR__ . '/../config/config.php';
 if (!defined('PARROT_MIS_DB')) {
     define('PARROT_MIS_DB', getenv('PARROT_MIS_DB') ?: 'mis_parrot');
 }
+if (!defined('PARROT_MIS_USER')) {
+    define('PARROT_MIS_USER', getenv('PARROT_MIS_USER') ?: '');
+}
+if (!defined('PARROT_MIS_PASS')) {
+    define('PARROT_MIS_PASS', getenv('PARROT_MIS_PASS') ?: '');
+}
 if (!defined('PARROT_MIS_PUBLIC_URL')) {
     define('PARROT_MIS_PUBLIC_URL', getenv('PARROT_MIS_PUBLIC_URL') ?: 'http://localhost/parrot_mis/');
+}
+
+/**
+ * Open a read PDO bound to the MIS (parrot_mis) database.
+ *
+ *  - If PARROT_MIS_USER is set in .env we open a SEPARATE connection using
+ *    those credentials. This is the cPanel-friendly path: the MIS db has its
+ *    own user (e.g. visaeofi_mis_user) and nothing has to be cross-granted.
+ *  - Otherwise we fall back to the CMS PDO and assume the CMS user has been
+ *    granted access to the MIS database (XAMPP / single-user installs).
+ */
+function pcvc_mis_pdo(): ?PDO
+{
+    static $pdo = false;
+    if ($pdo !== false) {
+        return $pdo;
+    }
+
+    $misDb = (string) PARROT_MIS_DB;
+    if ($misDb === '') {
+        return $pdo = null;
+    }
+
+    $options = [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ];
+
+    $user = (string) PARROT_MIS_USER !== '' ? PARROT_MIS_USER : DB_USER;
+    $pass = (string) PARROT_MIS_USER !== '' ? PARROT_MIS_PASS : DB_PASS;
+
+    try {
+        $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . $misDb . ';charset=utf8mb4';
+        $pdo = new PDO($dsn, $user, $pass, $options);
+    } catch (PDOException $e) {
+        error_log('pcvc_mis_pdo connection failed: ' . $e->getMessage());
+        $pdo = null;
+    }
+
+    return $pdo;
 }
 if (!defined('ELIGIBLE_PROGRAMS_SLUG')) {
     define('ELIGIBLE_PROGRAMS_SLUG', '/eligible-programs-canada-loan');

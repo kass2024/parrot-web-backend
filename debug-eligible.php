@@ -42,8 +42,12 @@ echo "  DB_HOST       = " . DB_HOST . "\n";
 echo "  DB_NAME       = " . DB_NAME . "\n";
 echo "  DB_USER       = " . DB_USER . "\n";
 echo "  DB_PASS       = " . (DB_PASS === '' ? "(empty)" : "(set, " . strlen(DB_PASS) . " chars)") . "\n";
-$misDb = getenv('PARROT_MIS_DB') ?: 'mis_parrot';
-echo "  PARROT_MIS_DB = " . $misDb . "\n\n";
+$misDb   = getenv('PARROT_MIS_DB')   ?: 'mis_parrot';
+$misUser = getenv('PARROT_MIS_USER') ?: '';
+$misPass = getenv('PARROT_MIS_PASS') ?: '';
+echo "  PARROT_MIS_DB   = " . $misDb . "\n";
+echo "  PARROT_MIS_USER = " . ($misUser !== '' ? $misUser : "(blank — will reuse DB_USER)") . "\n";
+echo "  PARROT_MIS_PASS = " . ($misPass !== '' ? "(set, " . strlen($misPass) . " chars)" : "(blank)") . "\n\n";
 
 $cmsPdo = null;
 $misPdo = null;
@@ -70,14 +74,16 @@ step("eligible_programs_settings exists", function () use ($cmsPdo) {
     return (int) $row . " rows";
 });
 
-step("Connect to MIS DB ({$misDb})", function () use (&$misPdo, $misDb) {
+step("Connect to MIS DB ({$misDb}) as its own user", function () use (&$misPdo, $misDb, $misUser, $misPass) {
+    $user = $misUser !== '' ? $misUser : DB_USER;
+    $pass = $misUser !== '' ? $misPass : DB_PASS;
     $misPdo = new PDO(
         'mysql:host=' . DB_HOST . ';dbname=' . $misDb . ';charset=utf8mb4',
-        DB_USER,
-        DB_PASS,
+        $user,
+        $pass,
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
     );
-    return $misDb;
+    return "connected as {$user}";
 });
 
 step("All databases this user can see", function () use ($cmsPdo) {
@@ -96,49 +102,39 @@ step("Brochures inside CMS DB itself", function () use ($cmsPdo) {
     }
 });
 
-step("MIS marketing_brochures exists", function () use ($misPdo, $misDb) {
+step("MIS marketing_brochures exists", function () use (&$misPdo) {
     if (!$misPdo) return 'skipped';
     $row = $misPdo->query('SELECT COUNT(*) FROM marketing_brochures')->fetchColumn();
     return (int) $row . " brochures total";
 });
 
-step("MIS active brochures", function () use ($misPdo) {
+step("MIS active brochures", function () use (&$misPdo) {
     if (!$misPdo) return 'skipped';
     $row = $misPdo->query('SELECT COUNT(*) FROM marketing_brochures WHERE is_active = 1')->fetchColumn();
     return (int) $row . " active";
 });
 
-step("MIS has university_id column", function () use ($misPdo, $misDb) {
+step("MIS has university_id column", function () use (&$misPdo) {
     if (!$misPdo) return 'skipped';
-    $stmt = $misPdo->prepare(
-        'SELECT 1 FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = :db
-            AND TABLE_NAME   = "marketing_brochures"
-            AND COLUMN_NAME  = "university_id"
-          LIMIT 1'
+    $stmt = $misPdo->query(
+        "SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'marketing_brochures'
+            AND COLUMN_NAME  = 'university_id'
+          LIMIT 1"
     );
-    $stmt->execute([':db' => $misDb]);
-    return $stmt->fetch() ? "yes" : "NO -- run the ALTER from sql/eligible_programs_cpanel.sql PART B";
+    return $stmt && $stmt->fetch() ? "yes" : "NO -- the model will auto-add it; or run PART B SQL";
 });
 
-step("Cross-DB join (the real query)", function () use ($cmsPdo, $misDb) {
-    if (!$cmsPdo) return 'skipped';
-    $sql = "SELECT COUNT(*) FROM `{$misDb}`.`marketing_brochures` b
-            LEFT JOIN eligible_programs_settings s
-                   ON s.brochure_slug COLLATE utf8mb4_general_ci = b.slug COLLATE utf8mb4_general_ci
-            WHERE b.is_active = 1";
-    $row = $cmsPdo->query($sql)->fetchColumn();
-    return (int) $row . " brochures visible through the CMS user";
-});
-
-step("Sample brochure row via cross-DB", function () use ($cmsPdo, $misDb) {
-    if (!$cmsPdo) return 'skipped';
-    $sql = "SELECT b.id, b.title, b.slug, b.is_active, b.region_id, b.university_id, b.pdf_path
-            FROM `{$misDb}`.`marketing_brochures` b
-            ORDER BY b.created_at DESC LIMIT 1";
-    $stmt = $cmsPdo->query($sql);
+step("Sample brochure row", function () use (&$misPdo) {
+    if (!$misPdo) return 'skipped';
+    $stmt = $misPdo->query(
+        "SELECT id, title, slug, is_active, region_id, pdf_path
+         FROM marketing_brochures
+         ORDER BY created_at DESC LIMIT 1"
+    );
     $row  = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : null;
-    return $row ? $row : '(no rows)';
+    return $row ?: '(no rows)';
 });
 
 echo "\n===========================================================\n";
